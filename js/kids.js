@@ -1,24 +1,22 @@
-// Two children who wander the house.
-// Each body is a signed-distance model with child proportions (measured from the photos in kids/),
-// polygonised with surface nets, skinned to a small skeleton and animated with a procedural walk.
-// Clothing, skin and hair colours come from the photos; the girl's unitard is the fabric cut from her
-// photo (textures/leotard.png). They are lit by a spherical-harmonics probe captured from the baked
-// house around them, and they route over a navigation grid built from the same floors and colliders
-// the player walks on, using the stairs and going only through open doors.
+// The two children, as reusable parts for the imps (js/game/imps.js).
+// Each body is a signed-distance model with child proportions, polygonised with surface nets, skinned to a
+// small skeleton and animated with a procedural walk. Geometry is shared per child; every instance has its
+// own skeleton and materials (lighting probe, glowing eyes, burn-away dissolve). The navigation grid is
+// built from the same floors and colliders the player walks on.
 import * as THREE from 'three';
-import { LightProbeGenerator } from 'three/addons/lights/LightProbeGenerator.js';
 import * as L from './layout.js';
 import { roomAt } from './house.js';
 import { REST_ARM, GIRL, BOY, BONES, PARENT, armFrame, buildKidGeometry } from './kidgeom.js';
+export { GIRL, BOY, REST_ARM };
 
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-const lerp = (a, b, t) => a + (b - a) * t;
 
 // ------------------------------------------------------------- shaders ----
 const lin = hex => { const c = new THREE.Color(hex); return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`; };
 const f = v => v.toFixed(4);
 const GLSL_LIB = `
 float kBump = 0.0;   // height for strand/fabric bump, set by kidAlbedo
+float kGlowMask = 0.0;   // where the eyes glow (irises), set by the eye kidAlbedo
 vec3 kPerturb(vec3 surf_pos, vec3 surf_norm, vec2 dHdxy, float faceDir) {
   vec3 vSigmaX = normalize(dFdx(surf_pos)), vSigmaY = normalize(dFdy(surf_pos)), vN = surf_norm;
   vec3 R1 = cross(vSigmaY, vN), R2 = cross(vN, vSigmaX);
@@ -181,27 +179,39 @@ vec3 kidAlbedo(vec3 p, float lab, inout float rough, inout float metal) {
   col = mix(col, ${lin(S.iris)} * 0.3, smoothstep(0.018, 0.0, abs(c - 0.843)) * 0.8);
   col = mix(col, vec3(0.012), smoothstep(0.962, 0.968, c));
   col *= mix(1.0, 0.45, smoothstep(0.05, 0.5, d.y));          // shadow of the upper lid
+  kGlowMask = smoothstep(0.82, 0.86, c);
   rough = 0.06; metal = 0.0;
   return col;
 }`;
 }
 
 // Standard material whose albedo comes from kidAlbedo() and whose diffuse light comes from an SH probe.
+// shared: { sh: Vector3[9], irr: {value}, dissolve: {value}, glow: {value: Color} } — per instance.
 function kidMaterial(key, glsl, shared, extra = {}, bump = 0) {
   const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, metalness: 0 });
   const mapsChunk = THREE.ShaderChunk.lights_fragment_maps.replace('iblIrradiance += getIBLIrradiance( geometryNormal );', '');
   m.onBeforeCompile = sh => {
     sh.uniforms.uSH = { value: shared.sh };
     sh.uniforms.uIrr = shared.irr;
+    sh.uniforms.uDissolve = shared.dissolve;
+    sh.uniforms.uGlowCol = shared.glow;
     for (const [k, v] of Object.entries(extra)) sh.uniforms[k] = v;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float lab;\nvarying vec3 vRest;\nvarying float vLab;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRest = position;\nvLab = lab;');
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vRest;\nvarying float vLab;\nuniform vec3 uSH[9];\nuniform float uIrr;\n' + GLSL_LIB + glsl)
-      .replace('#include <map_fragment>', '#include <map_fragment>\nfloat kRough = roughness, kMetal = metalness;\ndiffuseColor.rgb = kidAlbedo(vRest, vLab, kRough, kMetal);')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vRest;\nvarying float vLab;\nuniform vec3 uSH[9];\nuniform float uIrr;\nuniform float uDissolve;\nuniform vec3 uGlowCol;\n' + GLSL_LIB + glsl)
+      .replace('#include <map_fragment>', `#include <map_fragment>
+float kRough = roughness, kMetal = metalness;
+diffuseColor.rgb = kidAlbedo(vRest, vLab, kRough, kMetal);
+// burning away: the noise threshold rises with uDissolve, the edge glows like embers and chars what is left
+float kDis = kvn(vRest * 7.0) * 0.65 + kvn(vRest * 19.0) * 0.35;
+if (uDissolve > 0.0 && kDis < uDissolve) discard;
+float kEdge = uDissolve > 0.0 ? smoothstep(uDissolve + 0.07, uDissolve, kDis) : 0.0;
+diffuseColor.rgb *= 1.0 - (uDissolve > 0.0 ? 0.85 * smoothstep(uDissolve + 0.25, uDissolve, kDis) : 0.0);`)
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = kRough;')
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = kMetal;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += uGlowCol * kGlowMask + vec3(7.0, 2.0, 0.35) * kEdge;')
       .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n' +
         (bump ? `normal = kPerturb(-vViewPosition, normal, vec2(dFdx(kBump), dFdy(kBump)) * ${bump.toFixed(4)}, faceDirection);` : ''))
       .replace('#include <lights_fragment_maps>', mapsChunk +
@@ -220,15 +230,16 @@ function geometryFrom(mesh, lab) {
   return g;
 }
 
-// Start building both children's geometry in workers (call early; createKids awaits it).
-export function prebuildKids() {
+// Start building both children's geometry in workers (call early; the imps await it).
+// q: polygonisation step multiplier (1 = walkthrough detail).
+export function prebuildKids(q = 1) {
   const one = name => new Promise(resolve => {
     try {
       const w = new Worker(new URL('./kidworker.js', import.meta.url), { type: 'module' });
       w.onmessage = e => { resolve(e.data); w.terminate(); };
-      w.onerror = () => { w.terminate(); resolve(buildKidGeometry(name)); };
-      w.postMessage(name);
-    } catch (e) { resolve(buildKidGeometry(name)); }
+      w.onerror = () => { w.terminate(); resolve(buildKidGeometry(name, q)); };
+      w.postMessage({ name, q });
+    } catch (e) { resolve(buildKidGeometry(name, q)); }
   });
   const t0 = performance.now();
   return Promise.all([one('Girl'), one('Boy')]).then(([a, b]) => ({ Girl: a, Boy: b, ms: performance.now() - t0 }));
@@ -246,23 +257,45 @@ function blobTexture() {
   return blobTex;
 }
 
+// Geometry shared by every instance of one child (GPU buffers are uploaded once).
+export function kidAssets(S, G, leoTex) {
+  const body = G.body, hair = G.hair;
+  const bodyGeo = geometryFrom(body, body.lab);
+  bodyGeo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(body.si, 4));
+  bodyGeo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(body.sw, 4));
+  // long hair is skinned to the head above the jaw and to the chest below it, so it drapes on the shoulders
+  const hairGeo = geometryFrom(hair), hn = hair.pos.length / 3;
+  const hsi = new Uint16Array(hn * 4), hsw = new Float32Array(hn * 4);
+  const iHead = BONES.indexOf('head'), iChest = BONES.indexOf('chest');
+  for (let v = 0; v < hn; v++) {
+    const t = clamp((hair.pos[v * 3 + 1] - (S.chin - 0.28)) / 0.36, 0, 1), w = t * t * (3 - 2 * t);
+    hsi[v * 4] = iHead; hsw[v * 4] = w; hsi[v * 4 + 1] = iChest; hsw[v * 4 + 1] = 1 - w;
+  }
+  hairGeo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(hsi, 4));
+  hairGeo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(hsw, 4));
+  const eyeGeo = new THREE.SphereGeometry(S.eyeR, 20, 14);
+  eyeGeo.setAttribute('lab', new THREE.BufferAttribute(new Float32Array(eyeGeo.attributes.position.count), 1));
+  return { S, J: G.J, eyes: G.eyes, bodyGeo, hairGeo, eyeGeo, leoTex, stats: { tris: body.index.length / 3, hairTris: hair.index.length / 3 } };
+}
+
 // ============================================================== the kid ====
-class Kid {
-  constructor(S, G, leoTex) {
+export class Kid {
+  constructor(A, scale = 1) {
+    const S = A.S;
     this.S = S;
     this.name = S.name;
-    this.radius = S.radius;
-    this.shared = { sh: Array.from({ length: 9 }, () => new THREE.Vector3(0.25, 0.25, 0.25).multiplyScalar(0)), irr: KIDS_IRR };
+    this.scale = scale;
+    this.radius = S.radius * scale;
+    this.height = S.H * scale;
+    this.shared = {
+      sh: Array.from({ length: 9 }, () => new THREE.Vector3()), irr: KIDS_IRR,
+      dissolve: { value: 0 }, glow: { value: new THREE.Color(0, 0, 0) },
+    };
     this.targetSH = null;
-    // --- body mesh (geometry built in a worker by kidgeom.js)
-    const J = G.J, eyes = G.eyes, body = G.body, lab = body.lab, si = body.si, sw = body.sw, nv = lab.length;
-    const geo = geometryFrom(body, lab);
-    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
-    geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
-    const extra = leoTex ? { uLeo: { value: leoTex } } : {};
+    const J = A.J;
+    const extra = A.leoTex ? { uLeo: { value: A.leoTex } } : {};
     this.bodyMat = kidMaterial(S.name + '-body', S.name === 'Girl' ? girlGLSL(S) : boyGLSL(S), this.shared, extra);
-    this.mesh = new THREE.SkinnedMesh(geo, this.bodyMat);
-    this.mesh.frustumCulled = false;
+    this.mesh = new THREE.SkinnedMesh(A.bodyGeo, this.bodyMat);
     // --- skeleton
     this.bones = {};
     for (const b of BONES) { const bone = new THREE.Bone(); bone.name = b; this.bones[b] = bone; }
@@ -275,31 +308,20 @@ class Kid {
     this.mesh.updateMatrixWorld(true);
     this.mesh.bind(new THREE.Skeleton(BONES.map(b => this.bones[b])));
     this.rest = Object.fromEntries(BONES.map(b => [b, this.bones[b].position.clone()]));
-    // --- hair (rigid on the head bone)
+    // generous fixed bounds (any pose, lying down included) so the skinned meshes can be frustum culled
+    const bounds = new THREE.Sphere(new THREE.Vector3(0, S.H * 0.45, 0), S.H * 0.85);
+    this.mesh.boundingSphere = bounds;
+    // --- hair (skinned to head + chest)
     const hj = J.head[0];
-    const hair = G.hair;
     this.hairMat = kidMaterial(S.name + '-hair', hairGLSL(S), this.shared, {}, 1.6);
-    // skinned to the head above the jaw and to the chest below it, so long hair drapes on the
-    // shoulders instead of swinging round with the head
-    const hairGeo = geometryFrom(hair), hn = hair.pos.length / 3;
-    const hsi = new Uint16Array(hn * 4), hsw = new Float32Array(hn * 4);
-    const iHead = BONES.indexOf('head'), iChest = BONES.indexOf('chest');
-    for (let v = 0; v < hn; v++) {
-      const t = clamp((hair.pos[v * 3 + 1] - (S.chin - 0.28)) / 0.36, 0, 1), w = t * t * (3 - 2 * t);
-      hsi[v * 4] = iHead; hsw[v * 4] = w; hsi[v * 4 + 1] = iChest; hsw[v * 4 + 1] = 1 - w;
-    }
-    hairGeo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(hsi, 4));
-    hairGeo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(hsw, 4));
-    this.hair = new THREE.SkinnedMesh(hairGeo, this.hairMat);
-    this.hair.frustumCulled = false;
+    this.hair = new THREE.SkinnedMesh(A.hairGeo, this.hairMat);
+    this.hair.boundingSphere = bounds;
     this.mesh.add(this.hair);
     this.hair.bind(this.mesh.skeleton, this.mesh.bindMatrix);
     // --- eyes
     this.eyeMat = kidMaterial(S.name + '-eye', eyeGLSL(S), this.shared);
-    const eg = new THREE.SphereGeometry(S.eyeR, 28, 20);
-    eg.setAttribute('lab', new THREE.BufferAttribute(new Float32Array(eg.attributes.position.count), 1));
-    this.eyes = eyes.map(e => {
-      const m = new THREE.Mesh(eg, this.eyeMat);
+    this.eyes = A.eyes.map(e => {
+      const m = new THREE.Mesh(A.eyeGeo, this.eyeMat);
       m.position.set(e[0] - hj[0], e[1] - hj[1], e[2] - hj[2]);
       this.bones.head.add(m);
       return m;
@@ -307,73 +329,73 @@ class Kid {
     // --- contact shadow
     this.blob = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: blobTexture(), transparent: true, depthWrite: false, color: 0x000000, polygonOffset: true, polygonOffsetFactor: -2 }));
     this.blob.rotation.x = -Math.PI / 2;
-    this.blob.scale.set(S.H * 0.42, S.H * 0.34, 1);
+    this.blob.scale.set(S.H * 0.42 * scale, S.H * 0.34 * scale, 1);
     this.group = new THREE.Group();
     this.group.add(this.mesh);
+    this.group.scale.setScalar(scale);
     this.materials = [this.bodyMat, this.hairMat, this.eyeMat];
     // --- state
     this.x = 0; this.z = 0; this.feet = 0; this.heading = 0;
-    this.phase = 0; this.walkW = 0; this.speedNow = 0;
-    this.look = { yaw: 0, pitch: 0 }; this.lookTarget = null;
-    this.state = 'idle'; this.timer = 1 + Math.random() * 3; this.path = null; this.pi = 0; this.waitT = 0;
+    this.phase = 0; this.walkW = 0; this.speedNow = 0; this.run = 0;
+    this.look = { yaw: 0, pitch: 0 };
     this.blinkT = 2 + Math.random() * 3; this.blink = 0;
     this.idleLook = 0; this.idleLookT = 0;
     this.room = null;
-    this.stats = { verts: nv, tris: body.index.length / 3, hairTris: hair.index.length / 3 };
   }
 
   place(x, z, feet, heading = 0) { this.x = x; this.z = z; this.feet = feet; this.heading = heading; }
 
-  // ---------------------------------------------------------- animation
-  animate(dt, t, player) {
+  // Walk / run cycle, idle breathing, head tracking. focus ({x, y, z}) is what the head turns to (or null);
+  // idle lets the head glance around. run (0..1) leans the body forward and pumps the arms.
+  animate(dt, t, focus, idle = true) {
     const S = this.S, B = this.bones, R = this.rest;
-    const w = this.walkW;
+    const w = this.walkW, run = this.run;
     const legLen = S.hip[1] - S.ankle[1];
-    const A = Math.asin(clamp(S.step / (2 * legLen), 0, 0.6)) * 1.1 * w;
+    const A = Math.asin(clamp(S.step / (2 * legLen), 0, 0.6)) * (1.1 + 0.45 * run) * w;
     const ph = this.phase;
     const e = (b, x, y, z, order = 'XYZ') => B[b].rotation.set(x, y, z, order);
     // legs
     for (const [side, off] of [['L', 0], ['R', Math.PI]]) {
-      const p = ph + off, sn = Math.sin(p), cs = Math.cos(p);
-      const thigh = -A * sn;
-      const knee = w * (0.07 + S.kneeAmp * Math.pow(Math.max(0, Math.cos(p + 0.35)), 1.4)) + (1 - w) * 0.03;
+      const p = ph + off, sn = Math.sin(p);
+      const thigh = -A * sn - run * w * 0.12;
+      const knee = w * (0.07 + (S.kneeAmp + 0.5 * run) * Math.pow(Math.max(0, Math.cos(p + 0.35)), 1.4)) + (1 - w) * 0.03;
       const toe = w * 0.4 * Math.pow(Math.max(0, -Math.sin(p - 0.25)), 3);
       const sgn = side === 'L' ? 1 : -1;
       e('thigh' + side, thigh, 0, sgn * S.splay);
       e('shin' + side, knee, 0, 0);
       e('foot' + side, -(thigh + knee) + toe - w * 0.1 * Math.pow(Math.max(0, sn), 4), 0, -sgn * S.splay);
-      void cs;
     }
     // pelvis & spine
     const sn = Math.sin(ph), cs = Math.cos(ph);
     const breathe = Math.sin(t * 1.7) * 0.012;
     const idleSway = (1 - w) * Math.sin(t * 0.37 + (S.H > 3.3 ? 0 : 1.3)) * 0.018;
-    B.hips.position.set(R.hips.x - w * S.sway * cs + idleSway, R.hips.y - w * S.bob * (1 - Math.cos(2 * ph)) / 2, R.hips.z);
-    e('hips', 0, -w * S.hipYaw * sn, w * 0.03 * cs + (1 - w) * idleSway * 0.6, 'YXZ');
-    e('spine', w * 0.045, 0, 0);
-    e('chest', breathe - w * 0.02, w * S.hipYaw * 1.6 * sn, -w * 0.02 * cs, 'YXZ');
-    // arms: lowered from the rest A-pose, swinging against the legs
+    B.hips.position.set(R.hips.x - w * S.sway * cs + idleSway, R.hips.y - w * S.bob * (1 + run) * (1 - Math.cos(2 * ph)) / 2, R.hips.z);
+    e('hips', run * w * 0.1, -w * S.hipYaw * sn, w * 0.03 * cs + (1 - w) * idleSway * 0.6, 'YXZ');
+    e('spine', w * 0.045 + run * w * 0.14, 0, 0);
+    e('chest', breathe - w * 0.02 + run * w * 0.06, w * S.hipYaw * 1.6 * sn, -w * 0.02 * cs, 'YXZ');
+    // arms: lowered from the rest A-pose, swinging against the legs (bent and pumping when running)
     const armDown = REST_ARM - S.armRest;
-    e('upL', w * S.armSwing * sn + 0.04, 0, -armDown + (1 - w) * 0.03 * Math.sin(t * 0.9));
-    e('upR', -w * S.armSwing * sn + 0.04, 0, armDown - (1 - w) * 0.03 * Math.sin(t * 0.9 + 1));
-    e('foreL', -(S.elbow + w * 0.22 * Math.max(0, -sn)), 0, 0);
-    e('foreR', -(S.elbow + w * 0.22 * Math.max(0, sn)), 0, 0);
+    const swing = S.armSwing * (1 + 1.6 * run);
+    e('upL', w * swing * sn + 0.04, 0, -armDown + (1 - w) * 0.03 * Math.sin(t * 0.9));
+    e('upR', -w * swing * sn + 0.04, 0, armDown - (1 - w) * 0.03 * Math.sin(t * 0.9 + 1));
+    e('foreL', -(S.elbow + run * 0.9 + w * 0.22 * Math.max(0, -sn)), 0, 0);
+    e('foreR', -(S.elbow + run * 0.9 + w * 0.22 * Math.max(0, sn)), 0, 0);
     e('handL', 0, 0, 0.1); e('handR', 0, 0, -0.1);
-    // head: look at the player when close, otherwise glance around
+    // head: look at the focus point when in view, otherwise glance around
     let ty = 0, tp = 0.05;
     const cosH = Math.cos(this.heading), sinH = Math.sin(this.heading);
-    if (player) {
-      const dx = player.x - this.x, dz = player.z - this.z, dist = Math.hypot(dx, dz);
+    if (focus) {
+      const dx = focus.x - this.x, dz = focus.z - this.z, dist = Math.hypot(dx, dz);
       const lx = dx * cosH - dz * sinH, lz = dx * sinH + dz * cosH;
       const yaw = Math.atan2(lx, lz);
-      if (dist < 9 && Math.abs(yaw) < 1.9 && Math.abs(player.feet - this.feet) < 4) {
+      if (Math.abs(yaw) < 1.9) {
         ty = clamp(yaw, -S.lookYaw, S.lookYaw);
-        tp = -clamp(Math.atan2(player.camY - (this.feet + S.eyeY), Math.max(dist, 0.5)), -0.3, 0.55);
-      } else if (this.state === 'idle') {
-        this.idleLookT -= dt;
-        if (this.idleLookT <= 0) { this.idleLook = (Math.random() * 2 - 1) * 0.7; this.idleLookT = 1.5 + Math.random() * 3; }
-        ty = this.idleLook;
+        tp = -clamp(Math.atan2(focus.y - (this.feet + S.eyeY * this.scale), Math.max(dist, 0.5)), -0.3, 0.55);
       }
+    } else if (idle) {
+      this.idleLookT -= dt;
+      if (this.idleLookT <= 0) { this.idleLook = (Math.random() * 2 - 1) * 0.7; this.idleLookT = 1.5 + Math.random() * 3; }
+      ty = this.idleLook;
     }
     const k = Math.min(1, dt * 4);
     this.look.yaw += (ty - this.look.yaw) * k; this.look.pitch += (tp - this.look.pitch) * k;
@@ -386,7 +408,9 @@ class Kid {
     const lidScale = this.blink > 0 ? 0.12 : 1;
     const eyYaw = clamp((ty - this.look.yaw * 0.95) * 0.8, -0.4, 0.4), eyPitch = clamp((tp - this.look.pitch) * 0.8, -0.3, 0.3);
     for (const m of this.eyes) { m.rotation.set(eyPitch, eyYaw, 0, 'YXZ'); m.scale.set(1, lidScale, 1); }
-    // place
+    this.place3d();
+  }
+  place3d() {
     this.group.position.set(this.x, this.feet, this.z);
     this.group.rotation.y = this.heading;
     this.blob.position.set(this.x, this.feet + 0.015, this.z);
@@ -398,10 +422,12 @@ const KIDS_IRR = { value: 1.0 };
 
 // ======================================================== navigation ====
 const G = 0.5, NX0 = -1, NZ0 = -14.5, NNX = 96, NNZ = 104;
-class NavGrid {
-  constructor(boxes, doors, floorAt) {
+export class NavGrid {
+  // R: clearance around walls; TOP: body height checked against colliders
+  constructor(boxes, doors, floorAt, { R = 0.58, TOP = 3.55 } = {}) {
     this.floorAt = floorAt;
-    this.R = 0.58; this.TOP = 3.55;
+    this.R = R; this.TOP = TOP;
+    this.doorsOpenable = false;     // plan through shut (unlocked) doors: the imps open them on the way
     // spatial hash of collider boxes
     const HS = 2, hash = new Map();
     const hk = (i, j) => i * 1000 + j;
@@ -487,13 +513,24 @@ class NavGrid {
       if (!this.byRoom.has(r)) this.byRoom.set(r, []);
       this.byRoom.get(r).push(n);
     }
+    // A* scratch, reused between searches (generation stamps instead of clearing)
+    this.gs = new Float32Array(N); this.from = new Int32Array(N);
+    this.stamp = new Uint32Array(N); this.closedAt = new Uint32Array(N);
+    this.gen = 0;
+  }
+  // the shut door a node waits on, if any (imps open doors on their way)
+  shutDoorAt(n) {
+    const t = this.tags.get(n);
+    if (!t) return null;
+    for (const [d, mode] of t) if (mode === 'shut' && d.t < 0.85) return d;
+    return null;
   }
   isBlocked(n) {
     if (this.extraBlocked.has(n)) return true;
     const t = this.tags.get(n);
     if (!t) return false;
     for (const [d, mode] of t) {
-      if (mode === 'shut' && d.t < 0.85) return true;
+      if (mode === 'shut' && d.t < 0.85 && !(this.doorsOpenable && !d.locked)) return true;
       if (mode === 'open' && d.t > 0.15) return true;
     }
     return false;
@@ -513,35 +550,39 @@ class NavGrid {
     }
     return -1;
   }
-  // A* over the grid
-  path(a, b) {
+  // the walkable node under a point (no search), or -1
+  at(x, z, feet) { return this.nodeAt(Math.floor((x - NX0) / G), Math.floor((z - NZ0) / G), feet); }
+  // A* over the grid; gives up (null) after maxNodes expansions
+  path(a, b, maxNodes = 12000) {
     if (a < 0 || b < 0 || this.isBlocked(b)) return null;
-    const N = this.nh.length;
-    const gs = new Float32Array(N).fill(Infinity), from = new Int32Array(N).fill(-1), closed = new Uint8Array(N);
+    const gen = ++this.gen, gs = this.gs, from = this.from, stamp = this.stamp, closedAt = this.closedAt;
     const heap = [];
     const push = (n, f) => { heap.push([f, n]); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
     const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = i * 2 + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+    const g = n => (stamp[n] === gen ? gs[n] : Infinity);
     const hx = this.nx[b], hz = this.nz[b], hh = this.nh[b];
     const heur = n => Math.hypot(this.nx[n] - hx, this.nz[n] - hz) + Math.abs(this.nh[n] - hh);
-    gs[a] = 0; push(a, heur(a));
+    stamp[a] = gen; gs[a] = 0; from[a] = -1; push(a, heur(a));
+    let found = a === b, expanded = 0;
     while (heap.length) {
       const [, n] = pop();
-      if (closed[n]) continue;
-      if (n === b) break;
-      closed[n] = 1;
+      if (closedAt[n] === gen) continue;
+      if (n === b) { found = true; break; }
+      closedAt[n] = gen;
+      if (++expanded > maxNodes) return null;
       for (const m of this.adj[n]) {
-        if (closed[m] || this.isBlocked(m)) continue;
-        const g = gs[n] + Math.hypot(this.nx[m] - this.nx[n], this.nz[m] - this.nz[n], (this.nh[m] - this.nh[n]) * 1.5)
+        if (closedAt[m] === gen || this.isBlocked(m)) continue;
+        const ng = gs[n] + Math.hypot(this.nx[m] - this.nx[n], this.nz[m] - this.nz[n], (this.nh[m] - this.nh[n]) * 1.5)
           + (this.adj[m].length < 8 ? 0.35 : 0);                                  // keep off walls where there is room
-        if (g < gs[m]) { gs[m] = g; from[m] = n; push(m, g + heur(m)); }
+        if (ng < g(m)) { stamp[m] = gen; gs[m] = ng; from[m] = n; push(m, ng + heur(m)); }
       }
     }
-    if (from[b] < 0 && a !== b) return null;
+    if (!found) return null;
     const out = [b];
     while (out[out.length - 1] !== a) out.push(from[out[out.length - 1]]);
     return this.smooth(out.reverse());
   }
-  // can a child walk straight from node a to node b?
+  // can a body walk straight from node a to node b? (a shut door on the way needs its own stop)
   clear(a, b) {
     const x0 = this.nx[a], z0 = this.nz[a], x1 = this.nx[b], z1 = this.nz[b];
     const len = Math.hypot(x1 - x0, z1 - z0), steps = Math.ceil(len / 0.2);
@@ -549,7 +590,7 @@ class NavGrid {
     for (let s = 1; s <= steps; s++) {
       const t = s / steps, x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
       const m = this.nodeAt(Math.floor((x - NX0) / G), Math.floor((z - NZ0) / G), h);
-      if (m < 0 || this.isBlocked(m) || this.adj[m].length < 6) return false;
+      if (m < 0 || this.isBlocked(m) || this.adj[m].length < 6 || this.shutDoorAt(m)) return false;
       h = this.nh[m];
     }
     return Math.abs(h - this.nh[b]) < 0.75;          // must arrive on b's floor, not the one below or above it
@@ -564,186 +605,4 @@ class NavGrid {
     }
     return out;
   }
-}
-
-// ======================================================= behaviour ====
-const ROOM_WEIGHT = { play: 5, liv: 4, kit: 2.5, din: 1.5, br2: 2.5, br3: 2, br1: 1.5, hall: 0.4, laun: 0.4, foyer: 0.2 };
-function pickWeighted(entries) {
-  const tot = entries.reduce((a, e) => a + e[1], 0);
-  let r = Math.random() * tot;
-  for (const e of entries) { r -= e[1]; if (r <= 0) return e[0]; }
-  return entries[entries.length - 1][0];
-}
-
-export async function createKids(ctx) {
-  const { scene, renderer, floorAt, boxes, doors, envs, mirrors } = ctx;
-  const geom = await (ctx.geometry || prebuildKids());
-  const leo = await new THREE.TextureLoader().loadAsync('textures/leotard.png');
-  leo.colorSpace = THREE.SRGBColorSpace;
-  leo.anisotropy = 4;
-  const list = [new Kid(GIRL, geom.Girl, leo), new Kid(BOY, geom.Boy, null)];
-  const buildMs = geom.ms;
-  const nav = new NavGrid(boxes, doors, floorAt);
-  for (const k of list) { scene.add(k.group); scene.add(k.blob); }
-  const [ash, aus] = list;
-
-  const randomNodeIn = room => { const c = nav.byRoom.get(room); return c && c.length ? c[Math.floor(Math.random() * c.length)] : -1; };
-  const start = (k, room) => { const n = randomNodeIn(room); if (n >= 0) k.place(nav.nx[n], nav.nz[n], nav.nh[n], Math.random() * 6.28); };
-  start(ash, 'play'); start(aus, 'liv');
-
-  function plan(k, other) {
-    const from = nav.nearest(k.x, k.z, k.feet);
-    if (from < 0) return false;
-    for (let tries = 0; tries < 8; tries++) {
-      let goal = -1;
-      if (k === aus && other.goalNode >= 0 && Math.random() < 0.35) {
-        // tag along after his sister
-        const g = other.goalNode, cand = nav.byRoom.get(nav.nroom[g]) || [];
-        const near = cand.filter(n => { const d = Math.hypot(nav.nx[n] - nav.nx[g], nav.nz[n] - nav.nz[g]); return d > 2.2 && d < 4.5 && Math.abs(nav.nh[n] - nav.nh[g]) < 0.5; });
-        if (near.length) goal = near[Math.floor(Math.random() * near.length)];
-      }
-      if (goal < 0) {
-        const rooms = Object.entries(ROOM_WEIGHT).filter(([r]) => nav.byRoom.has(r) && r !== k.lastRoom);
-        goal = randomNodeIn(pickWeighted(rooms));
-      }
-      if (goal < 0) continue;
-      if (other.goalNode >= 0 && Math.hypot(nav.nx[goal] - nav.nx[other.goalNode], nav.nz[goal] - nav.nz[other.goalNode]) < 2) continue;
-      const p = nav.path(from, goal);
-      if (p && p.length > 1) { k.path = p; k.pi = 1; k.goalNode = goal; k.lastRoom = nav.nroom[goal]; return true; }
-    }
-    return false;
-  }
-  for (const k of list) k.goalNode = -1;
-
-  function think(k, other, dt, player) {
-    if (k.state === 'idle') {
-      k.speedNow = Math.max(0, k.speedNow - dt * 4);
-      k.timer -= dt;
-      if (k.timer <= 0) {
-        if (plan(k, other)) k.state = 'walk';
-        else k.timer = 2 + Math.random() * 3;
-      }
-      return;
-    }
-    if (k.state === 'wait') {
-      k.speedNow = Math.max(0, k.speedNow - dt * 5);
-      k.waitT -= dt;
-      if (!obstacleAhead(k, other, player)) { k.state = 'walk'; return; }
-      if (k.waitT <= 0) {
-        // step around: block the obstacle's cells and re-plan
-        nav.extraBlocked.clear();
-        for (const o of [player, other]) {
-          const c = nav.nearest(o.x, o.z, o.feet);
-          if (c >= 0) { nav.extraBlocked.add(c); for (const m of nav.adj[c]) nav.extraBlocked.add(m); }
-        }
-        const ok = plan(k, other);
-        nav.extraBlocked.clear();
-        k.state = ok ? 'walk' : 'idle'; k.timer = 2; k.grace = 1.5;
-      }
-      return;
-    }
-    // walking
-    const n = k.path[k.pi];
-    const tx = nav.nx[n], tz = nav.nz[n];
-    const dx = tx - k.x, dz = tz - k.z, dist = Math.hypot(dx, dz);
-    const last = k.pi === k.path.length - 1;
-    if (dist < (last ? 0.25 : 0.55)) {
-      if (last) { k.state = 'idle'; k.timer = 4 + Math.random() * 8; k.goalNode = -1; return; }
-      k.pi++;
-      return;
-    }
-    // re-check the route every so often (a door may have been shut)
-    k.checkT = (k.checkT || 0) - dt;
-    if (k.checkT <= 0) {
-      k.checkT = 0.6;
-      if (nav.nearest(k.x, k.z, k.feet) < 0) {                      // off the walkable grid: recover
-        const n = nav.nearest(k.x, k.z, nav.nh[k.path[k.pi]]);
-        if (n >= 0) { k.x = nav.nx[n]; k.z = nav.nz[n]; k.feet = nav.nh[n]; }
-        if (!plan(k, other)) { k.state = 'idle'; k.timer = 2; }
-        return;
-      }
-      for (let i = k.pi; i < k.path.length; i++) if (nav.isBlocked(k.path[i])) { if (!plan(k, other)) { k.state = 'idle'; k.timer = 2; } return; }
-    }
-    if (obstacleAhead(k, other, player)) { k.state = 'wait'; k.waitT = 1.5 + Math.random() * 1.5; return; }
-    const want = Math.atan2(dx, dz);
-    let dh = want - k.heading;
-    while (dh > Math.PI) dh -= 2 * Math.PI;
-    while (dh < -Math.PI) dh += 2 * Math.PI;
-    k.heading += clamp(dh, -3.2 * dt, 3.2 * dt);
-    const target = k.S.speed * clamp(Math.cos(dh) * 1.2, 0.15, 1) * (last ? clamp(dist / 1.2, 0.35, 1) : 1);
-    k.speedNow += (target - k.speedNow) * Math.min(1, dt * 3);
-    const step = k.speedNow * dt;
-    k.x += Math.sin(k.heading) * step; k.z += Math.cos(k.heading) * step;
-    k.feet = floorAt(k.x, k.z, k.feet);
-  }
-  // Something in the way? The boy yields to his sister; she only stops if he is right in front of her.
-  // After re-routing a child gets a moment's grace to walk clear of the other.
-  function obstacleAhead(k, other, player) {
-    const fx = Math.sin(k.heading), fz = Math.cos(k.heading);
-    for (const o of [player, other]) {
-      if (Math.abs(o.feet - k.feet) > 2.5) continue;
-      const isKid = o === other;
-      if (isKid && k.grace > 0) continue;
-      const reach = isKid && k === ash ? 0.75 + k.radius : 1.1 + k.radius;
-      const dx = o.x - k.x, dz = o.z - k.z, d = Math.hypot(dx, dz);
-      if (d < reach && (dx * fx + dz * fz) / (d || 1) > (isKid ? 0.6 : 0.35)) return true;
-    }
-    return false;
-  }
-
-  // ---- lighting: SH probe per kid, captured from the house around them
-  const cubeRT = new THREE.WebGLCubeRenderTarget(16, { type: THREE.HalfFloatType });
-  const cubeCam = new THREE.CubeCamera(0.05, 400, cubeRT);
-  let capturing = false, nextCapture = 0, turn = 0;
-  async function capture(k, now) {
-    capturing = true;
-    for (const kk of list) { kk.group.visible = false; kk.blob.visible = false; }
-    for (const m of mirrors) m.visible = false;
-    cubeCam.position.set(k.x, k.feet + k.S.H * 0.55, k.z);
-    cubeCam.update(renderer, scene);
-    for (const m of mirrors) m.visible = true;
-    for (const kk of list) { kk.group.visible = true; kk.blob.visible = true; }
-    try {
-      const probe = await LightProbeGenerator.fromCubeRenderTarget(renderer, cubeRT);
-      k.targetSH = probe.sh.coefficients.map(v => v.clone());
-      if (!k.hasSH) { k.hasSH = true; k.shared.sh.forEach((v, i) => v.copy(k.targetSH[i])); }
-    } catch (e) { /* ignore */ }
-    capturing = false;
-    void now;
-  }
-  const kidRoom = k => roomAt(k.x, k.z, k.feet + 1.5)?.id || 'ext';
-
-  // warm start: light both before the first frame
-  for (const k of list) { k.animate(0, 0, null); await capture(k, 0); }
-
-  let time = 0;
-  return {
-    list, nav, irr: KIDS_IRR, buildMs,
-    update(dt, player, now) {
-      time += dt;
-      const p = { x: player.x, z: player.z, feet: player.feet, camY: player.camY };
-      for (const k of list) {
-        const other = k === ash ? aus : ash;
-        k.grace = Math.max(0, (k.grace || 0) - dt);
-        if (!k.frozen) think(k, other, dt, p);
-        const moving = k.state === 'walk' && k.speedNow > 0.05;
-        k.walkW += ((moving ? 1 : 0) - k.walkW) * Math.min(1, dt * 5);
-        k.phase += (k.speedNow * dt) / (2 * k.S.step) * 2 * Math.PI;
-        if (moving === false && k.walkW < 0.05) k.phase = Math.round(k.phase / Math.PI) * Math.PI;
-        k.animate(dt, time, p);
-        if (k.targetSH) k.shared.sh.forEach((v, i) => v.lerp(k.targetSH[i], Math.min(1, dt * 2.5)));
-        const r = kidRoom(k);
-        if (r !== k.room) {
-          k.room = r;
-          const env = envs.get(r) || envs.get('ext');
-          for (const m of k.materials) { m.envMap = env || null; m.envMapIntensity = 1; m.needsUpdate = !!env !== !!m.userData.hadEnv; m.userData.hadEnv = !!env; }
-        }
-      }
-      if (!capturing && now > nextCapture) {
-        nextCapture = now + 220;
-        const k = list[turn++ % list.length];
-        capture(k, now);
-      }
-    },
-  };
 }

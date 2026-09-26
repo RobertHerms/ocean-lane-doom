@@ -4,89 +4,31 @@
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Ocean Lane Walkthrough</title>
+<title>Ocean Lane: Imps in the House</title>
 <style>
-  :root { --panel: rgba(20, 18, 16, 0.66); --ink: #f4efe6; --muted: #bdb3a4; --accent: #f0b35a; }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1916; color: var(--ink);
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: #ddd;
     font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  #view { display: block; width: 100vw; height: 100vh; outline: none; cursor: grab; }
-  #view:active { cursor: grabbing; }
-  .panel { position: fixed; background: var(--panel); border-radius: 10px; backdrop-filter: blur(6px); }
+  #view { position: fixed; left: 0; top: 0; display: block; width: 100vw; outline: none; cursor: crosshair; }
+  body.retro #view { image-rendering: pixelated; }
+  body.playing #view { cursor: none; }   /* the mouse turns you; the HUD draws the crosshair */
+  #screens { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
+  #mapLayer { position: fixed; inset: 0; pointer-events: none; }   /* automap: over the view, under the HUD's message line */
+  #warn { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); padding: 6px 12px; background: rgba(60, 0, 0, 0.8);
+    color: #ffd28a; font-size: 13px; border-radius: 6px; z-index: 20; }
   .hidden { display: none !important; }
-  #loc { top: 14px; left: 14px; padding: 8px 14px; display: flex; flex-direction: column; }
-  #loc span { font-weight: 650; font-size: 16px; }
-  #loc small { color: var(--muted); font-size: 12px; letter-spacing: .03em; text-transform: uppercase; }
-  #map { position: fixed; top: 14px; right: 14px; width: 220px; height: 262px; background: var(--panel); border-radius: 10px; }
-  #hint { left: 50%; bottom: 26px; transform: translateX(-50%); padding: 9px 16px; transition: opacity .15s; opacity: 0; white-space: nowrap; }
-  #hint b { color: var(--accent); border: 1px solid rgba(240,179,90,.5); border-radius: 4px; padding: 0 5px; font-weight: 600; }
-  #help { left: 14px; bottom: 14px; padding: 10px 14px; font-size: 12.5px; color: var(--muted); }
-  #help b { color: var(--ink); font-weight: 600; }
-  #help div { margin: 1px 0; }
-  #warn { left: 50%; top: 14px; transform: translateX(-50%); padding: 8px 14px; color: #ffd28a; font-size: 13px; }
-  #crosshair { position: fixed; left: 50%; top: 50%; width: 5px; height: 5px; margin: -2.5px 0 0 -2.5px; border-radius: 50%;
-    background: rgba(255,255,255,.7); box-shadow: 0 0 0 1px rgba(0,0,0,.3); pointer-events: none; }
-  #start { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(27,25,22,.8), rgba(27,25,22,.96)); }
-  #start .card { max-width: 470px; padding: 28px 30px; background: #26231f; border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-  #start h1 { margin: 0 0 6px; font-size: 24px; }
-  #start p { margin: 0 0 14px; color: var(--muted); }
-  #start table { border-collapse: collapse; margin-bottom: 16px; width: 100%; }
-  #start td { padding: 3px 0; vertical-align: top; }
-  #start td:first-child { width: 150px; color: var(--ink); font-weight: 600; }
-  #start td:last-child { color: var(--muted); }
-  #go { font: inherit; font-weight: 650; background: var(--accent); color: #231a0c; border: 0; border-radius: 8px; padding: 10px 20px; cursor: pointer; }
-  #go:disabled { opacity: .45; cursor: wait; }
-  #loading { margin-left: 12px; color: var(--muted); font-size: 12.5px; }
-  @media (max-width: 700px) { #map { width: 150px; height: 179px; } #help { display: none; } }
-  /* touch: two thumb sticks (walk on the left, look on the right) */
-  #view, .stick { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  .stick { position: fixed; bottom: calc(22px + env(safe-area-inset-bottom)); width: 138px; height: 138px; border-radius: 50%;
-    background: rgba(20, 18, 16, .34); border: 2px solid rgba(244, 239, 230, .38); backdrop-filter: blur(3px); display: none; }
-  #stickWalk { left: calc(20px + env(safe-area-inset-left)); }
-  #stickLook { right: calc(20px + env(safe-area-inset-right)); }
-  .stick .knob { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%;
-    display: grid; place-items: center; background: rgba(244, 239, 230, .85); color: #2b241c; box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
-    transition: transform .12s ease-out; }
-  .stick.active .knob { transition: none; background: rgba(255, 250, 240, .95); }
-  .stick .knob svg { width: 34px; height: 34px; }
-  body.touch.walking .stick { display: block; }
-  body.touch #help { display: none; }
-  body.touch #hint { cursor: pointer; }
-  .touch-only { display: none; }
-  body.touch .touch-only { display: table-row; }
-  /* options button, crouch / jump buttons, options panel */
-  .rbtn { position: fixed; border: 0; border-radius: 50%; background: var(--panel); color: var(--ink); backdrop-filter: blur(6px);
-    display: none; place-items: center; cursor: pointer; padding: 0; font: 600 11px/1.1 system-ui, sans-serif; letter-spacing: .02em; }
-  .rbtn svg { width: 22px; height: 22px; display: block; margin: 0 auto 2px; }
-  body.walking .rbtn { display: grid; }
-  body.options-open .rbtn:not(#optBtn) { display: none; }
-  #optBtn { left: 14px; top: 74px; width: 42px; height: 42px; }
-  #optBtn svg { margin: 0 auto; }
-  #btnJump, #btnCrouch { right: calc(18px + env(safe-area-inset-right)); width: 62px; height: 62px; }
-  #btnJump { bottom: calc(100px + env(safe-area-inset-bottom)); }
-  #btnCrouch { bottom: calc(26px + env(safe-area-inset-bottom)); }
-  #btnCrouch.on { background: rgba(240,179,90,.85); color: #231a0c; }
-  body.touch #btnJump { bottom: calc(250px + env(safe-area-inset-bottom)); right: calc(26px + env(safe-area-inset-right)); }
-  body.touch #btnCrouch { bottom: calc(176px + env(safe-area-inset-bottom)); right: calc(26px + env(safe-area-inset-right)); }
-  body.touch #hint { bottom: calc(176px + env(safe-area-inset-bottom)); }
-  #options { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(12,11,10,.45); z-index: 5; }
-  #options .card { width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 20px 22px;
-    background: #26231f; border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-  #options h2 { margin: 0 0 14px; font-size: 18px; }
-  #options h3 { margin: 16px 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-  .orow { display: grid; grid-template-columns: 118px 1fr 48px; align-items: center; gap: 10px; margin: 8px 0; }
-  .orow output { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .orow input[type=range] { width: 100%; accent-color: var(--accent); }
-  .seg { display: flex; gap: 0; border: 1px solid rgba(244,239,230,.25); border-radius: 8px; overflow: hidden; }
-  .seg label { flex: 1; text-align: center; padding: 7px 0; cursor: pointer; color: var(--muted); }
-  .seg input { position: absolute; opacity: 0; pointer-events: none; }
-  .seg label:has(input:checked) { background: var(--accent); color: #231a0c; font-weight: 650; }
-  .needs-layers.disabled { opacity: .4; pointer-events: none; }
-  #options .btns { display: flex; justify-content: space-between; margin-top: 18px; }
-  #options button.b { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer; }
-  #oReset { background: transparent; color: var(--muted); border: 1px solid rgba(244,239,230,.25) !important; }
-  #oClose { background: var(--accent); color: #231a0c; }
-  #options small { color: var(--muted); }
+  /* touch: left stick walks, right stick looks; fire / use / weapon buttons on the right */
+  #view, .stick, .tbtn { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .stick { position: fixed; width: 132px; height: 132px; border-radius: 50%; background: rgba(40, 10, 5, .35);
+    border: 2px solid rgba(255, 190, 150, .35); display: none; z-index: 6; }
+  .stick .knob { position: absolute; left: 50%; top: 50%; width: 60px; height: 60px; margin: -30px 0 0 -30px; border-radius: 50%;
+    background: rgba(255, 210, 180, .75); box-shadow: 0 4px 14px rgba(0, 0, 0, .35); transition: transform .12s ease-out; }
+  .stick.active .knob { transition: none; }
+  .tbtn { position: fixed; display: none; z-index: 6; width: 64px; height: 64px; padding: 0; border: 2px solid rgba(255, 190, 150, .45);
+    border-radius: 50%; background: rgba(60, 12, 6, .5); color: #ffd9c0; font: 700 12px/1 system-ui, sans-serif; letter-spacing: .04em; }
+  .tbtn.small { width: 46px; height: 46px; font-size: 11px; }
+  .tbtn.on { background: rgba(200, 40, 20, .65); }
+  body.touch.playing .stick, body.touch.playing .tbtn { display: block; }
 </style>
 <script type="importmap">
   { "imports": {
@@ -99,64 +41,20 @@
 </head>
 <body>
 <canvas id="view" tabindex="0"></canvas>
+<div id="mapLayer"></div>
+<canvas id="stbar"></canvas>
+<canvas id="msg"></canvas>
 <div id="crosshair"></div>
-<div id="loc" class="panel"><span>Front walk</span><small>Outside</small></div>
-<canvas id="map"></canvas>
-<div id="hint" class="panel"></div>
-<div id="stickWalk" class="stick" aria-label="Walk"><div class="knob"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7.2 2h9.6l-.5 9.6-.9 8.2h-2.5l-.6-8.6h-.6l-.6 8.6H8.6l-.9-8.2z"/><path fill="currentColor" d="M8.5 19.2h3l.2 2.6H6.4c0-1.4.9-2.6 2.1-2.6zM12.5 19.2h3c1.2 0 2.1 1.2 2.1 2.6h-5.3z"/></svg></div></div>
-<div id="stickLook" class="stick" aria-label="Look around"><div class="knob"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1.8 12c1.4-2.9 3.2-4.3 5.2-4.3s3.8 1.4 5.2 4.3c-1.4 2.9-3.2 4.3-5.2 4.3S3.2 14.9 1.8 12z"/><path d="M11.8 12c1.4-2.9 3.2-4.3 5.2-4.3s3.8 1.4 5.2 4.3c-1.4 2.9-3.2 4.3-5.2 4.3s-3.8-1.4-5.2-4.3z"/></g><circle cx="7.3" cy="12.2" r="2.1" fill="currentColor"/><circle cx="17.3" cy="12.2" r="2.1" fill="currentColor"/></svg></div></div>
-<button id="optBtn" class="rbtn" aria-label="Options" title="Options (O)"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.5 7.5 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.5 7.5 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.5 7.5 0 0 0 1.7 1l.3 2.6h4l.4-2.6a7.5 7.5 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg></button>
-<button id="btnJump" class="rbtn" aria-label="Jump" title="Jump (J)"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 13l7-7 7 7M5 19l7-7 7 7"/></svg>Jump</button>
-<button id="btnCrouch" class="rbtn" aria-label="Crouch" title="Crouch (X)"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 5l7 7 7-7M5 11l7 7 7-7"/></svg>Crouch</button>
-<div id="options" class="hidden" role="dialog" aria-label="Options">
-  <div class="card">
-    <h2>Options</h2>
-    <h3>Lighting</h3>
-    <div class="needs-layers">
-      <div class="seg">
-        <label><input type="radio" name="tod" value="day">Day</label>
-        <label><input type="radio" name="tod" value="dusk">Dusk</label>
-        <label><input type="radio" name="tod" value="night">Night</label>
-      </div>
-      <div class="orow"><label for="oLights">House lights</label><input id="oLights" type="range" min="0" max="1.5" step="0.05"><output id="oLightsV"></output></div>
-    </div>
-    <div class="orow"><label for="oBright">Brightness</label><input id="oBright" type="range" min="-2" max="2" step="0.1"><output id="oBrightV"></output></div>
-    <div class="orow"><label for="oBloom">Glow (bloom)</label><input id="oBloom" type="range" min="0" max="1" step="0.01"><output id="oBloomV"></output></div>
-    <h3>Movement &amp; view</h3>
-    <div class="orow"><label for="oSpeed">Walking speed</label><input id="oSpeed" type="range" min="0.4" max="2.5" step="0.1"><output id="oSpeedV"></output></div>
-    <div class="orow"><label for="oFov">Field of view</label><input id="oFov" type="range" min="50" max="95" step="1"><output id="oFovV"></output></div>
-    <small>Settings are remembered in this browser.</small>
-    <div class="btns"><button id="oReset" class="b">Reset</button><button id="oClose" class="b">Done</button></div>
-  </div>
-</div>
-<div id="warn" class="panel hidden">Lighting hasn't been baked for this layout yet — open bake.html first.</div>
-<div id="help" class="panel">
-  <div><b>↑ / ↓</b> walk forward / back</div>
-  <div><b>← / →</b> turn left / right</div>
-  <div><b>Shift + ← / →</b> (or A / D) sidestep</div>
-  <div><b>PgUp / PgDn</b> (or R / F, or drag) look up / down</div>
-  <div><b>Space</b> open / close the door you face</div>
-  <div><b>J</b> jump &nbsp; <b>X</b> crouch &nbsp; <b>O</b> options</div>
-  <div><b>M</b> map &nbsp; <b>C</b> level view &nbsp; <b>H</b> hide help</div>
-</div>
-<div id="start">
-  <div class="card">
-    <h1>Ocean Lane walkthrough</h1>
-    <p>You're standing just inside the front door. Two kids are wandering around the house somewhere.</p>
-    <table>
-      <tr><td>↑ / ↓</td><td>Walk forward / back</td></tr>
-      <tr><td>← / →</td><td>Turn</td></tr>
-      <tr><td>Shift + ← / →</td><td>Sidestep (also A / D)</td></tr>
-      <tr><td>PgUp / PgDn</td><td>Look up / down (also R / F or drag the mouse)</td></tr>
-      <tr><td>Space</td><td>Open / close a door or garage door</td></tr>
-      <tr><td>J · X</td><td>Jump · crouch (also the buttons on the right)</td></tr>
-      <tr><td>O</td><td>Options: time of day, lighting, walking speed</td></tr>
-      <tr><td>M · H · C</td><td>Map · help · level your view</td></tr>
-      <tr class="touch-only"><td>Touch</td><td>Left stick walks, right stick looks around; tap a door (or the prompt) to open it</td></tr>
-    </table>
-    <button id="go" disabled>Start walking</button><span id="loading">Loading…</span>
-  </div>
-</div>
+<div id="flash"></div>
+<div id="stickWalk" class="stick" aria-label="Move"><div class="knob"></div></div>
+<div id="stickLook" class="stick" aria-label="Look"><div class="knob"></div></div>
+<button id="btnFire" class="tbtn" aria-label="Fire">FIRE</button>
+<button id="btnUse" class="tbtn" aria-label="Use">USE</button>
+<button id="btnNext" class="tbtn small" aria-label="Next weapon">GUN</button>
+<button id="btnMap" class="tbtn small" aria-label="Map">MAP</button>
+<button id="btnMenu" class="tbtn small" aria-label="Menu">| |</button>
+<div id="screens"></div>
+<div id="warn" class="hidden">Lighting hasn't been baked for this layout yet.</div>
 <script type="module" src="js/main.js"></script>
 </body>
 </html>

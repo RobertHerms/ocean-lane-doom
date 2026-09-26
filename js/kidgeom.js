@@ -341,8 +341,9 @@ function skinWeights(S, J, P, lab) {
   return { si, sw };
 }
 
-// Everything the renderer needs for one child, as plain typed arrays.
-export function buildKidGeometry(name) {
+// Everything the renderer needs for one child, as plain typed arrays. q scales the polygonisation step
+// (1 = the walkthrough's close-up detail; the game uses coarser meshes because there are many imps).
+export function buildKidGeometry(name, q = 1) {
   const S = name === 'Girl' ? GIRL : BOY;
   const comps0 = bodyComponents(S, null);
   const core0 = (x, y, z) => comps0(x, y, z)[0];
@@ -355,7 +356,7 @@ export function buildKidGeometry(name) {
   const comps = bodyComponents(S, sockets);
   const field = bodyField(comps);
   const reach = S.shX + (S.arm.up + S.arm.fore + S.arm.hand) * Math.sin(REST_ARM) + 0.12;
-  const body = polygonize(field, [-reach, -0.03, -0.45], [reach, S.H + 0.04, 0.5], S.H > 3.3 ? 0.016 : 0.015);
+  const body = polygonize(field, [-reach, -0.03, -0.45], [reach, S.H + 0.04, 0.5], (S.H > 3.3 ? 0.016 : 0.015) * q);
   const nv = body.pos.length / 3, lab = new Float32Array(nv);
   for (let i = 0; i < nv; i++) {
     const c = comps(body.pos[i * 3], body.pos[i * 3 + 1], body.pos[i * 3 + 2]);
@@ -365,8 +366,8 @@ export function buildKidGeometry(name) {
   const J = joints(S);
   const { si, sw } = skinWeights(S, J, body.pos, lab);
   const hair = S.name === 'Girl'
-    ? polygonize(HAIR.Girl, [-0.5, 2.3, -0.5], [0.5, S.H + 0.12, 0.42], 0.0125)
-    : polygonize(HAIR.Boy, [-0.42, S.chin + 0.02, -0.42], [0.42, S.H + 0.12, 0.36], 0.0125);
+    ? polygonize(HAIR.Girl, [-0.5, 2.3, -0.5], [0.5, S.H + 0.12, 0.42], 0.0125 * q)
+    : polygonize(HAIR.Boy, [-0.42, S.chin + 0.02, -0.42], [0.42, S.H + 0.12, 0.36], 0.0125 * q);
   return {
     name, J, eyes,
     body: { pos: body.pos, nrm: body.nrm, index: Uint32Array.from(body.index), lab, si, sw },
